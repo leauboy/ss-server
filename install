@@ -1,0 +1,345 @@
+#Shadowsocks服务器端安装配置全过程
+#参考链接：
+#https://blog.csdn.net/ytmayer/article/details/53982782
+#http://www.itfanr.cc/2016/10/02/use-shadowsocks-to-have-better-internet-experience/
+#https://github.com/shadowsocks/shadowsocks-libev#installation
+#https://medium.com/@unbiniliumm/%E5%A6%82%E4%BB%8A%E6%88%91%E8%BF%99%E6%A0%B7%E7%A7%91%E5%AD%A6%E4%B8%8A%E7%BD%91-95187ef07ced
+#https://blog.steamedfish.org/blog/post/steamedfish/shadowsocks-with-simple-obfs
+#https://leamtrop.com/2018/04/22/shadowsocks-obfuscation/
+#https://teddysun.com/511.html
+
+
+#安装必要组件
+#更新源，更新系统
+sh -c 'printf "deb http://deb.debian.org/debian jessie-backports main\n" > /etc/apt/sources.list.d/jessie-backports.list'
+sh -c 'printf "deb http://deb.debian.org/debian jessie-backports-sloppy main" >> /etc/apt/sources.list.d/jessie-backports.list'
+apt update
+*apt-get upgrade
+apt-get install build-essential net-tools
+
+#安装 shadowsocks
+apt -t jessie-backports-sloppy install shadowsocks-libev
+
+#*安装加密用软件 libsodium：
+
+wget https://download.libsodium.org/libsodium/releases/LATEST.tar.gz
+tar zxvf LATEST.tar.gz
+cd libsodium-stable
+./configure
+make && make check
+make install
+echo /usr/local/lib > /etc/ld.so.conf.d/usr_local_lib.conf
+ldconfig
+
+#编辑shadowsocks配置
+nano /etc/shadowsocks-libev/config.json
+
+{
+    "server":"0.0.0.0",
+    "server_port":443,
+    "local_port":1080,
+    "password":"passwd",
+    "timeout":60,
+    "method":"chacha20-ietf-poly1305"
+}
+
+#ss-server控制
+systemctl start shadowsocks-libev
+systemctl stop shadowsocks-libev
+systemctl status shadowsocks-libev
+systemctl restart shadowsocks-libev
+
+#配置多用户
+cd /etc/shadowsocks-libev/
+cp config.json config1.json
+nano config1.json
+setsid ss-server -c /etc/shadowsocks-libev/***.json -u
+systemctl restart shadowsocks-libev
+
+#查看ss-server运行状态
+ps ax |grep ss-server  # 查看输出是否有那么多个 /usr/bin/ss-server 进程
+netstat -tuap          # 查看输出的端口是否有多个端口在监听
+
+#加入开机启动
+nano /etc/rc.local
+setsid ss-server -c /etc/shadowsocks-libev/***.json -u
+
+#开启混淆
+apt-get install simple-obfs
+nano /etc/shadowsocks-libev/config.json
+
+{
+    "server":"0.0.0.0",
+    "server_port":443,
+    "local_port":1080,
+    "password":"passwd",
+    "timeout":300,
+    "method":"chacha20-ietf-poly1305",
+	"workers":1024,
+	"plugin": "obfs-server",
+	"plugin_opts":"obfs=tls;failover=127.0.0.1:8443"，
+	"fast_open":true
+}
+
+systemctl restart shadowsocks-libev
+
+#确认 ss-server 和 obfs-server 进程已经正常启动。
+ps -ef | grep -v grep | grep "server"
+#输出结果参考：
+  /usr/local/bin/ss-server -u -c /etc/shadowsocks-libev/config.json -f /var/run/shadowsocks-libev.pid
+  /usr/local/bin/obfs-server --obfs http
+
+  
+#安装BBR魔改版
+#更新内核
+
+wget --no-check-certificate -qO 'BBR.sh' 'https://moeclub.org/attachment/LinuxShell/BBR.sh' && chmod a+x BBR.sh && bash BBR.sh -f
+lsmod | grep 'bbr'
+
+#安装 BBR 魔改版
+wget --no-check-certificate -qO 'BBR_POWERED.sh' 'https://moeclub.org/attachment/LinuxShell/BBR_POWERED.sh' && chmod a+x BBR_POWERED.sh && bash BBR_POWERED.sh
+lsmod | grep 'bbr_powered'
+
+#限制用户档案的体积大小
+nano /etc/security/limits.conf
+#用户档案警告体积大小(bytes)
+soft    nofile           512000
+#用户档案最大体积大小(bytes)
+hard    nofile          1024000
+
+#安全配置
+nano /etc/pam.d/common-session  #加入
+session required pam_limits.so
+
+nano /etc/profile #加入
+ulimit -SHn 51200
+
+
+#内核优化
+nano /etc/sysctl.conf
+
+kernel.msgmnb = 65536
+#进程通讯消息队列的最大字节数(bytes)
+kernel.msgmax = 65536
+#进程通讯消息队列单条数据最大的长度(bytes)
+kernel.shmmax = 68719476736
+#内核允许的最大共享内存大小(bytes)
+kernel.shmall = 4294967296
+#任意时间内系统可以使用的共享内存总量(bytes)
+
+# max open files
+fs.file-max = 102400
+# max read buffer
+net.core.rmem_max = 67108864
+# max write buffer
+net.core.wmem_max = 67108864
+# default read buffer
+net.core.rmem_default = 65536
+# default write buffer
+net.core.wmem_default = 65536
+# max processor input queue
+net.core.netdev_max_backlog = 4096
+# max backlog
+net.core.somaxconn = 4096
+# resist SYN flood attacks
+net.ipv4.tcp_syncookies = 1
+# reuse timewait sockets when safe
+net.ipv4.tcp_tw_reuse = 1
+# turn off fast timewait sockets recycling
+# net.ipv4.tcp_tw_recycle = 0
+# short FIN timeout
+net.ipv4.tcp_fin_timeout = 30
+# short keepalive time
+net.ipv4.tcp_keepalive_time = 1200
+# outbound port range
+net.ipv4.ip_local_port_range = 10000 65000
+# max SYN backlog
+net.ipv4.tcp_max_syn_backlog = 4096
+# max timewait sockets held by system simultaneously
+net.ipv4.tcp_max_tw_buckets = 5000
+# turn on TCP Fast Open on both client and server side
+net.ipv4.tcp_fastopen = 3
+# TCP receive buffer
+net.ipv4.tcp_rmem = 10240 87380 67108864
+# TCP write buffer
+net.ipv4.tcp_wmem = 10240 87380 67108864
+# turn on path MTU discovery
+net.ipv4.tcp_mtu_probing = 1
+net.ipv4.conf.all.accept_source_route = 1
+net.ipv4.conf.default.accept_source_route = 1
+#允许接收IPv4环境下带有路由信息的数据包，保证安全性
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+#拒绝接收来自IPv4的ICMP重定向消息，保证安全性
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.default.send_redirects = 0
+net.ipv4.conf.lo.send_redirects = 0
+#禁止发送在IPv4下的ICMP重定向消息，保证安全性
+net.ipv4.conf.all.rp_filter = 0
+net.ipv4.conf.default.rp_filter = 0
+net.ipv4.conf.lo.rp_filter = 0
+#关闭反向路径回溯进行源地址验证(RFC1812)，提高性能
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+#忽略所有ICMP ECHO请求的广播，保证安全性
+net.ipv4.icmp_ignore_bogus_error_responses = 1
+#忽略违背RFC1122标准的伪造广播帧，保证安全性
+net.ipv6.conf.all.accept_source_route = 1
+net.ipv6.conf.default.accept_source_route = 1
+#允许接收IPv6环境下带有路由信息的数据包，保证安全性
+net.ipv6.conf.all.accept_redirects = 0
+net.ipv6.conf.default.accept_redirects = 0
+#禁止接收来自IPv6下的ICMPv6重定向消息，保证安全性
+net.ipv6.conf.all.autoconf = 1
+#开启自动设定本地连接地址，用于支持IPv6地址的正常分配
+net.ipv6.conf.all.forwarding = 1
+#开启所有网络设备的IPv6流量转发，用于支持IPv6的正常访问
+
+#使配置生效
+sysctl -p
+
+#*安装kcptun#
+mkdir /root/kcptun
+cd /root/kcptun
+wget https://github.com/xtaci/kcptun/releases/download/v20180316/kcptun-linux-amd64-20180316.tar.gz
+tar -zxvf kcptun-linux-amd64-20180316.tar.gz
+
+#建立脚本
+
+nano start.sh
+
+#!/bin/bash
+cd /root/kcptun/
+./server_linux_amd64 -c /root/kcptun/server-config.json > kcptun.log 2>&1 &
+echo "Kcptun started."
+
+nano stop.sh
+
+#!/bin/bash
+echo "Stopping Kcptun..."
+PID=`ps -ef | grep server_linux_amd64 | grep -v grep | awk '{print $2}'`
+if [ "" !=  "$PID" ]; then
+  echo "killing $PID"
+  kill -9 $PID
+fi
+echo "Kcptun stoped."
+
+nano restart.sh
+
+#!/bin/bash
+cd /root/kcptun/
+sh stop.sh
+echo "Restarting Kcptun..."
+sh start.sh
+
+#给sh脚本添加执行权限
+
+#建立配置文件
+{
+    "listen": ":29900",
+    "target": "0.0.0.0:443",
+    "key": "passwd",
+    "crypt": "salsa20",
+    "mode": "fast2",
+    "mtu": 1350,
+    "sndwnd": 1024,
+    "rcvwnd": 1024,
+    "datashard": 70,
+    "parityshard": 30,
+    "dscp": 46,
+    "nocomp": false,
+    "acknodelay": false,
+    "nodelay": 0,
+    "interval": 40,
+    "resend": 0,
+    "nc": 0,
+    "sockbuf": 4194304,
+    "keepalive": 10
+}
+
+#listen 表示 Kcptun 的服务端监听端口，用于接收外部请求和发送数据，默认 29900；
+#target 表示要加速的地址，由于 Kcptun 和 Shadowsocks 在同一服务器，地址填写 #127.0.0.1（不需要改，这是指本机IP，除非你有多个IP），而 12948 为 Shadowsocks 服务端监听端口；
+#key 是 Kcptun 的验证密钥，服务端和本地必须一致才能通过验证；
+#mode 为加速模式，fast3, fast2, fast, normal (默认: “fast”) ；
+#crypt 为加密方式，支持aes, aes-128, aes-192, salsa20, blowfish, twofish, cast5, 3des, tea, xtea, xor, none #(默认: “aes”)；
+#nocomp 为压缩传输，false 表示开启压缩传输。
+#其余参数请自行使用 ./server_linux_386 -h 查看或参考项目地址说明文档。
+
+#推荐参数：
+
+#适用大部分ADSL接入（非对称上下行）的参数（实验环境电信100M ADSL）。
+#其它带宽请按比例调整，比如 50M ADSL，把 -sndwnd -rcvwnd 减掉一半。
+ 
+#SERVER:   -mtu 1400 -sndwnd 2048 -rcvwnd 2048 -mode fast2
+#CLIENT:   -mtu 1400 -sndwnd 256 -rcvwnd 2048 -mode fast2 -dscp 46
+
+#启动Kcptun并添加开机运行
+sh /root/kcptun/start.sh
+
+#添加开机运行
+chmod +x /etc/rc.local;echo "sh /root/kcptun/start.sh" >> /etc/rc.local
+
+#kcptun一键安装
+#参考链接：https://blog.kuoruan.com/110.html
+
+#确定加速IP及端口
+netstat -nl | grep 443
+wget --no-check-certificate https://github.com/leauboy/shell-scripts/blob/master/kcptun/kcptun.sh
+chmod +x ./kcptun.sh
+./kcptun.sh
+
+#配置iptables
+#参考链接：https://salogs.com/news/2015/08/20/iptables-save/#%E4%BF%9D%E5%AD%98%E8%A7%84%E5%88%99
+#保存iptables规则
+iptables -I INPUT -p udp --dport 29900 -j ACCEPT
+iptables-save > /etc/iptables/rules.v4
+#恢复iptables规则
+iptables-restore < /etc/iptables/rules.v4
+#开机加载iptables规则
+apt-get install iptables-persistent
+
+#建立ftp服务器（vsftpd）
+
+#安装vsftpd
+apt install vsftpd
+
+#设置开机启动vsftpd服务
+systemctl enable vsftpd.service
+
+#现在就开启vsftpd服务
+systemctl start vsftpd.service
+
+#看vsftpd服务是否正常启动，出现running就可以
+systemctl -a|grep vsftpd
+
+#建立ftp用户文件夹
+mkdir /home/ftp
+
+#建立ftp用户
+useradd -d /home/ftp -s /bin/bash ftpusr
+
+#设置ftp用户的密码
+passwd ftpusr
+
+#设置ftp用户文件夹的权限
+chown -R ftpusr:ftpuser /home/ftp
+chmod 700 /home/ftp
+chmod a-w /home/ftp
+
+#新建一个/etc/vsftpd.user_list的文件，在其中添加用户ftpusr
+touch /etc/vsftpd.user_list && echo "ftpusr" > /etc/vsftpd.user_list
+
+#编辑vsftpd.conf文件
+nano /etc/vsftpd.conf
+
+#不允许匿名访问
+anonymous_enable=NO
+#允许使用本地帐户进行FTP用户登录验证
+local_enable=YES
+#打开write模式
+write_enable=YES
+#添加userlist_file信息
+userlist_file=/etc/vsftpd.user_list
+#添加userlist_enable信息
+userlist_enable=YES
+#添加userlist_deny信息
+userlist_deny=NO
